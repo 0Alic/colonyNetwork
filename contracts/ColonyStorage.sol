@@ -74,6 +74,9 @@ contract ColonyStorage is CommonStorage, ColonyDataTypes, ColonyNetworkDataTypes
   uint256 paymentCount; // Storage slot 22
   mapping (uint256 => Payment) payments; // Storage slot 23
 
+  uint256 expenditureCount; // Storage slot 24
+  mapping (uint256 => Expenditure) expenditures; // Storage slot 25
+
   modifier validPayoutAmount(uint256 _amount) {
     require(_amount <= MAX_PAYOUT, "colony-payout-too-large");
     _;

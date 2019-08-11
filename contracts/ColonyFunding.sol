@@ -95,6 +95,31 @@ contract ColonyFunding is ColonyStorage, PatriciaTreeProofs { // ignore-swc-123
     }
   }
 
+  function claimExpenditure(uint256 _id, address payable _recipient, address _token) public
+  stoppable
+  {
+    Expenditure storage expenditure = expenditures[_id];
+    require(expenditure.status == ExpenditureStatus.Finalized, "colony-expenditure-not-finalized");
+
+    FundingPot storage fundingPot = fundingPots[expenditure.fundingPotId];
+    assert(fundingPot.balance[_token] >= fundingPot.payouts[_token]);
+
+    uint256 payout = expenditure.payouts[_recipient][_token];
+    expenditure.payouts[_recipient][_token] = 0;
+
+    // Process reputation updates if own token
+    if (_token == token) {
+      IColonyNetwork colonyNetworkContract = IColonyNetwork(colonyNetworkAddress);
+      colonyNetworkContract.appendReputationUpdateLog(_recipient, int(payout), domains[expenditure.domainId].skillId);
+      if (expenditure.skills[_recipient].length > 0 && expenditure.skills[_recipient][0] > 0) {
+        // Currently we support at most one skill per Expenditure, but this will likely change in the future.
+        colonyNetworkContract.appendReputationUpdateLog(_recipient, int(payout), expenditure.skills[_recipient][0]);
+      }
+    }
+
+    processPayout(expenditure.fundingPotId, _token, payout, _recipient);
+  }
+
   function claimPayment(uint256 _id, address _token) public
   stoppable
   paymentFinalized(_id)
@@ -171,12 +196,12 @@ contract ColonyFunding is ColonyStorage, PatriciaTreeProofs { // ignore-swc-123
       );
     }
 
-    if (fromPot.associatedType == FundingPotAssociatedType.Task || fromPot.associatedType == FundingPotAssociatedType.Payment) {
+    if (fromPot.associatedType != FundingPotAssociatedType.Domain) {
       uint256 fromPotPreviousAmount = add(fromPot.balance[_token], _amount);
       updatePayoutsWeCannotMakeAfterPotChange(_fromPot, _token, fromPotPreviousAmount);
     }
 
-    if (toPot.associatedType == FundingPotAssociatedType.Task || toPot.associatedType == FundingPotAssociatedType.Payment) {
+    if (toPot.associatedType != FundingPotAssociatedType.Domain) {
       uint256 toPotPreviousAmount = sub(toPot.balance[_token], _amount);
       updatePayoutsWeCannotMakeAfterPotChange(_toPot, _token, toPotPreviousAmount);
     }
@@ -413,6 +438,32 @@ contract ColonyFunding is ColonyStorage, PatriciaTreeProofs { // ignore-swc-123
     }
   }
 
+  function setExpenditurePayout(uint256 _id, address payable _recipient, address _token, uint256 _amount)
+  public
+  stoppable
+  {
+    Expenditure storage expenditure = expenditures[_id];
+    FundingPot storage fundingPot = fundingPots[expenditure.fundingPotId];
+
+    require(expenditure.owner == msg.sender, "colony-expenditure-not-owner");
+    require(expenditure.status == ExpenditureStatus.Active, "colony-expenditure-not-active");
+    require(_recipient != address(0x0), "colony-expenditure-invalid-recipient");
+    assert(fundingPot.associatedType == FundingPotAssociatedType.Expenditure);
+
+    // Reset payoutScalar
+    if (expenditure.payoutScalars[_recipient] != WAD) {
+      expenditure.payoutScalars[_recipient] = WAD;
+    }
+
+    uint256 currentTotal = fundingPot.payouts[_token];
+    uint256 currentPayout = expenditure.payouts[_recipient][_token];
+
+    expenditure.payouts[_recipient][_token] = _amount;
+    fundingPot.payouts[_token] = add(sub(currentTotal, currentPayout), _amount);
+
+    updatePayoutsWeCannotMakeAfterBudgetChange(expenditure.fundingPotId, _token, currentTotal);
+  }
+
   function setTaskPayout(uint256 _id, TaskRole _role, address _token, uint256 _amount) private
   taskExists(_id)
   taskNotComplete(_id)
@@ -479,9 +530,11 @@ contract ColonyFunding is ColonyStorage, PatriciaTreeProofs { // ignore-swc-123
       domainId = tasks[fundingPot.associatedTypeId].domainId;
     } else if (fundingPot.associatedType == FundingPotAssociatedType.Payment) {
       domainId = payments[fundingPot.associatedTypeId].domainId;
+    } else if (fundingPot.associatedType == FundingPotAssociatedType.Expenditure) {
+      domainId = expenditures[fundingPot.associatedTypeId].domainId;
     } else {
       // If rewards pot, return root domain.
-      assert(_fundingPotId == 0);
+      require(_fundingPotId == 0, "colony-funding-expected-rewards-pot");
       domainId = 1;
     }
   }
